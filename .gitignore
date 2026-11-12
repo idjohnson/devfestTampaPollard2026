@@ -218,3 +218,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- Workshop additions ----
+
+# Secrets: never commit keys or local environment files (.env is ignored above)
+.env.local
+.env.*.local
+*.key
+*.pem
+*secrets*
+
+# Pollard stores written while running the exercises
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+# ...except the committed recording of a real model run
+!recordings/*.db
+
+# Office lock files and local scratch space
+~$*
+scratch/

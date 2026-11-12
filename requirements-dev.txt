@@ -1,0 +1,2 @@
+# Only needed to run the smoke test through pytest. The test also runs as a plain script.
+pytest>=8

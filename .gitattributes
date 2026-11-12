@@ -1,0 +1,10 @@
+# Keep line endings stable across Windows, macOS, Linux and Colab
+* text=auto eol=lf
+
+# Binary files: never convert line endings, never diff as text
+*.db    binary
+*.whl   binary
+*.pptx  binary
+*.pdf   binary
+*.png   binary
+*.jpg   binary
