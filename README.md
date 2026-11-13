@@ -32,6 +32,7 @@ After the exercises, the notebook runs the same flow on a real model, and then t
 | File | What it is |
 |---|---|
 | `workshop.ipynb` | The notebook: setup, the four exercises, a real-model run and the gallery |
+| `slides/Govern_Your_Agents_with_Pollard.pptx` | The slides from the session; the speaker notes explain each slide |
 | `workshop_kit.py` | What the notebook imports: the agent's prompt, its two tools, the model paths, the finished agent loop and a self-check |
 | `requirements.txt` | The pinned Pollard release |
 | `.env.example` | Settings for the optional hosted-model path, for local runs |
