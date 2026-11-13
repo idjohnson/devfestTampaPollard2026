@@ -1,20 +1,30 @@
-"""Shared helpers for the "Govern Your Agents" workshop.
+"""Helpers for the "Govern Your Agents" workshop notebook.
 
-The notebook and the tests both import this module, so there is one
-definition of the agent's prompt, tools, model paths and reference loop.
+This module holds the agent's prompt, its two tools, the model paths and the
+finished agent loop, so the notebook can show only the lines that matter.
 
-The constants in the first section determine every node ID shown on the
-slides. Change one of them and the IDs change, which is the point of a
-content-addressed execution tree, but the slides will no longer match.
+    python workshop_kit.py
+
+runs the four exercises on the scripted model in a temporary store and ends
+with PASS when this machine reproduces the node IDs shown on the slides.
+
+The constants in the first section determine every one of those IDs. Change
+one and the IDs change, which is the point of a content-addressed execution
+tree, but the slides will no longer match.
 """
 
 from __future__ import annotations
 
 import contextlib
 import hashlib
+import html
+import importlib.metadata
+import io
 import json
 import os
 import sqlite3
+import sys
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -473,14 +483,161 @@ def pollard_cli(*arguments: str) -> int:
         return stop.code if isinstance(stop.code, int) else 1
 
 
+# --------------------------------------------------------------------------
+# Self-check: the four exercises on the scripted model, against the IDs on the slides
+# --------------------------------------------------------------------------
+EXPECTED = {
+    "root": "e7c06c72",
+    "path": ["4f4428fc", "58339706", "9fcff188", "99a3838a", "5a78d649"],
+    "budget_refusal_steps_2": "86840b53",
+    "budget_refusal_steps_3": "84a72a90",
+    "policy_refusal": "d4f027bc",
+    "approval_request": "6eab2bbe",
+    "decision": "aae163fa",      # with the reviewer "your-name"
+    "seal": "51f5fe8c08ca70ad",  # with the reviewer "your-name"
+    "nodes": 12,
+}
+
+
+def self_check(verbose: bool = False) -> bool:
+    """Run the four exercises on the scripted model in a temporary store and compare the result with EXPECTED.
+
+    Prints one line, PASS or FAIL. With verbose=True it also prints every step and every check.
+    """
+    version = importlib.metadata.version("pollard")
+    failures: list[str] = []
+    say = print if verbose else (lambda *a: None)
+
+    def check(label: str, condition: bool) -> None:
+        say(("[ok]   " if condition else "[FAIL] ") + label)
+        if not condition:
+            failures.append(label)
+
+    def run(db: str, **options: Any) -> dict[str, Any]:
+        return agent(db, quiet=not verbose, **options)
+
+    def cli(*arguments: str) -> int:
+        with contextlib.redirect_stdout(sys.stdout if verbose else io.StringIO()):
+            return pollard_cli(*arguments)
+
+    say(f"pollard {version} on Python {sys.version.split()[0]}")
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+        db = os.path.join(folder, "workshop.db")
+
+        say("\nExercise 1: budget\nsteps=2")
+        first = run(db, steps=2, gate=False)
+        check("budget refusal after the model call and the lookup",
+              first["status"] == "budget" and first["refusal"] == EXPECTED["budget_refusal_steps_2"]
+              and first["live"] == {"model": 1, "lookup_order": 1, "issue_refund": 0})
+        say("steps=2, run again")
+        again = run(db, steps=2, gate=False)
+        check("the rerun serves the record: same refusal node, no live calls",
+              again["refusal"] == first["refusal"] and not any(again["live"].values()))
+        say("steps=3")
+        third = run(db, steps=3, gate=False)
+        check("the larger budget pays for one new model call, then refuses the refund",
+              third["status"] == "budget" and third["refusal"] == EXPECTED["budget_refusal_steps_3"]
+              and third["live"] == {"model": 1, "lookup_order": 0, "issue_refund": 0})
+
+        say("\nExercise 2: gate\nfirst run, steps=8")
+        paused = run(db, steps=8, gate=True)
+        check("the refund is refused until a decision exists",
+              paused["status"] == "policy" and paused["refusal"] == EXPECTED["policy_refusal"]
+              and paused["request"]["id"][:8] == EXPECTED["approval_request"] and not any(paused["live"].values()))
+        decision_id = approve(paused["request"], "your-name", db=db)
+        say(f"after the approval cell (decision node {decision_id})")
+        check("the decision node matches the slides", decision_id == EXPECTED["decision"])
+        done = run(db, steps=8, gate=True)
+        check("after approval the refund handler runs once and the run finishes",
+              done["status"] == "done" and done["path"] == EXPECTED["path"]
+              and done["live"] == {"model": 1, "lookup_order": 0, "issue_refund": 1})
+        say("third run")
+        spent = run(db, steps=8, gate=True)
+        check("a used approval cannot be spent again",
+              spent["status"] == "policy" and not any(spent["live"].values()))
+
+        say("\nExercise 3: evidence")
+        root = done["root"]
+        verified, digest, nodes = evidence(root, db)
+        say(f"  root {root[:8]}, {nodes} nodes, seal {digest[:16]}")
+        check("the root ID matches the slides and can be recomputed with hashlib alone",
+              root[:8] == EXPECTED["root"] and root == root_id_by_hand())
+        check("the store verifies, holds twelve nodes and seals to the expected digest",
+              verified and nodes == EXPECTED["nodes"] and digest[:16] == EXPECTED["seal"])
+        tampered = os.path.join(folder, "tampered.db")
+        edit = tamper(db, tampered)
+        say(f"  edited copy: {edit}")
+        with SQLiteStore(tampered, read_only=True) as store:
+            tampered_verifies = verify_tree(store, root)
+        check("an edited result fails verification",
+              edit == f"refund result {EXPECTED['path'][3]}: cents 4200 -> 42" and not tampered_verifies)
+        say("  pollard verify on the store:")
+        store_code = cli("verify", db)
+        say("  pollard verify on the edited copy (its FAIL line is the expected outcome):")
+        copy_code = cli("verify", tampered)
+        check("pollard verify exits 0 on the store and 1 on the edited copy", store_code == 0 and copy_code == 1)
+
+        say('\nExercise 4: replay\nmode="replay"')
+        replayed = run(db, steps=8, gate=True, mode="replay")
+        still_verified, digest_after, nodes_after = evidence(root, db)
+        check("strict replay follows the same path with no live calls",
+              replayed["status"] == "done" and replayed["path"] == done["path"] and not any(replayed["live"].values()))
+        check("replay leaves the store unchanged",
+              still_verified and digest_after == digest and nodes_after == nodes)
+        say('replay with "late" instead of "damaged"')
+        missed = run(db, steps=8, gate=True, mode="replay", task=TASK.replace("damaged", "late"))
+        check("a changed input misses instead of going live",
+              missed["status"] == "missing" and not any(missed["live"].values()))
+        try:
+            agent(tampered, steps=8, gate=True, mode="replay", quiet=True)
+            refused = False
+        except IntegrityError:
+            refused = True
+        check("strict replay refuses the edited store", refused)
+
+    say()
+    if failures:
+        print(f"FAIL: {len(failures)} check(s) failed on pollard {version}: " + "; ".join(failures))
+        return False
+    print(f"PASS: every check held on pollard {version}")
+    return True
+
+
+# --------------------------------------------------------------------------
+# Notebook helpers
+# --------------------------------------------------------------------------
+def todo(number: int, code: str) -> Any:
+    """Marks a line an attendee fills in during an exercise. Running it says what to type."""
+    raise NotImplementedError(f"TODO {number}: replace this todo(...) call with:  {code}")
+
+
+def tree_html(db: str = DB, root: str | None = None, *, payloads: bool = False, height: int = 520) -> str:
+    """The tree as `pollard show --html` draws it, inside an iframe so a notebook can show it inline."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+        page = os.path.join(folder, "tree.html")
+        arguments = ["show", db, root or root_id_by_hand(), "--html", page] + (["--payloads"] if payloads else [])
+        with contextlib.redirect_stdout(io.StringIO()):  # the command prints the name of the file it wrote
+            code = pollard_cli(*arguments)
+        if code != 0:
+            raise RuntimeError(f"pollard show failed with exit code {code}")
+        with open(page, encoding="utf-8") as handle:
+            document = handle.read()
+    return (f'<div><iframe srcdoc="{html.escape(document)}" width="100%" height="{height}" '
+            'style="border: 1px solid #bbb"></iframe></div>')
+
+
 __all__ = [
-    "DB", "RUN_LABEL", "SCRIPTED", "SCRIPTED_MODEL", "SYSTEM", "TASK", "LIVE", "ModelPath",
+    "DB", "EXPECTED", "RUN_LABEL", "SCRIPTED", "SCRIPTED_MODEL", "SYSTEM", "TASK", "LIVE", "ModelPath",
     "agent", "approve", "assistant_message", "choose_model", "describe", "evidence", "first_messages",
     "has_side_effects", "live_calls", "make_registry", "parse_decision", "pollard_cli", "recorded_model",
-    "registry", "reset", "reset_counters", "root_id_by_hand", "scripted_model", "sentinel", "tamper",
-    "tool_message", "verify_tree",
+    "registry", "reset", "reset_counters", "root_id_by_hand", "scripted_model", "self_check", "sentinel",
+    "tamper", "todo", "tool_message", "tree_html", "verify_tree",
     # re-exported so a notebook needs one import line
     "ActionSpec", "ApprovalPolicy", "ApprovalRequest", "Budget", "BudgetExceeded", "IntegrityError",
     "MissingRecording", "PolicyViolation", "Registry", "Runtime", "SQLiteStore", "decide_approval",
     "request_approval", "seal", "verify",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(0 if self_check(verbose=True) else 1)
