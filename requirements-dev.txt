@@ -1,3 +1,0 @@
-# Needed for the unit tests of the kit and to run the smoke test through pytest.
-# The smoke test also runs as a plain script, with Pollard alone.
-pytest>=8
