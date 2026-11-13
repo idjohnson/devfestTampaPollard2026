@@ -21,7 +21,9 @@ You take a small refund agent, put it under [Pollard](https://github.com/jemsbha
 
 | Item | State |
 |---|---|
+| Kit (`workshop_kit.py`): the agent's prompt, tools, model paths and reference loop | In the repository |
 | Smoke test (`tests/test_workshop_flow.py`) | In the repository |
+| Unit tests for the kit (`tests/test_workshop_kit.py`) | In the repository |
 | Notebook (`workshop.ipynb`) | Being added |
 | Slides (`slides/`) | Being added |
 | Recording of a real model run (`recordings/`) | Being added |
@@ -47,6 +49,8 @@ python3 -m venv .venv
 ```
 
 The last line should read `PASS: every check held on pollard 1.6.2`. The root ID it prints starts with `e7c06c72`, the same as everyone else's: a root identity depends only on the run label.
+
+The unit tests for the kit need pytest. Install `requirements-dev.txt` with the same interpreter, then run `python -m pytest tests -q`. They make no network calls: the endpoint path is tested against a stub server on localhost, and that one test is skipped when the `openai` package is not installed.
 
 ## Version policy
 
